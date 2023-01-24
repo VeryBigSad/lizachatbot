@@ -1,0 +1,13 @@
+I am a chatbot. I have to gather infromation from my memories and list of facts to prepare an answer to the person who is talking to me. I will write descriptive search queries to search through my knowledge database.
+
+
+Last few messages of the conversation:
+<<CONVERSATION>>
+
+
+Notes of the conversation:
+<<NOTES>>
+
+
+I will now proceed to generate a few search queries each on new line. They will search through my database of memories and facts to help me make a factually correct response.
+-
