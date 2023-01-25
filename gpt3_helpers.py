@@ -1,10 +1,13 @@
+import os
 import re
+from time import time, sleep
 
 import numpy as np
 import openai
 from numpy.linalg import norm
 
 from constants import BOT_NAME
+from utils import save_file
 
 
 def gpt3_embedding(content, engine='text-embedding-ada-002'):

@@ -1,37 +1,13 @@
-import datetime
-import json
 from time import time
+from typing import List
 from uuid import uuid4
 
 import openai
 
 from constants import USERNAME, BOT_NAME
 from gpt3_helpers import vector_similarity, gpt3_embedding, gpt3_completion
-from models import Message, Conversation
-
-
-def open_file(filepath):
-    with open(filepath, 'r', encoding='utf-8') as infile:
-        return infile.read()
-
-
-def save_file(filepath, content):
-    with open(filepath, 'w', encoding='utf-8') as outfile:
-        outfile.write(content)
-
-
-def load_json(filepath):
-    with open(filepath, 'r', encoding='utf-8') as infile:
-        return json.load(infile)
-
-
-def save_json(filepath, payload):
-    with open(filepath, 'w', encoding='utf-8') as outfile:
-        json.dump(payload, outfile, ensure_ascii=False, sort_keys=True, indent=2)
-
-
-def timestamp_to_datetime(unix_time):
-    return datetime.datetime.fromtimestamp(unix_time).strftime("%A, %B %d, %Y at %I:%M%p %Z")
+from models import Message, Conversation, Note
+from utils import open_file, save_json, timestamp_to_datetime
 
 
 def fetch_memories(vector, logs, count):
@@ -87,66 +63,93 @@ def get_last_messages(conversation, limit):
 
 def get_user_input() -> Message:
     user_input = input(f'{USERNAME}: ')
-    msg = Message(USERNAME, user_input)
-    return msg
+    return Message(USERNAME, user_input)
+
+
+def search_conversation(conversation: Conversation, message: Message) -> List[Message]:
+    """
+    Search the conversation for messages that are related to the given message
+
+    :param conversation: Conversation object, the conversation to search
+    :param message: Message object, that we want to find related messages for
+    :return: List of messages that are related to the given message
+    """
+    message_list = conversation.get_messages()
+    query_vector = gpt3_embedding(message.text)
+    similarities = {}
+    for message in message_list:
+        # TODO: don't store the entire message in memory, just the vector/uuid
+        similarities[message] = vector_similarity(query_vector, message.vector)
+        # get the top 3 most similar messages
+    ordered = [i[0] for i in sorted(similarities.items(), key=lambda x: x[1], reverse=True)[:6]]
+    return ordered
+
+
+def summarize_notes(notes):
+    prompt = open_file('prompts/compress_notes.txt').replace('<<NOTES>>', '\n- '.join([note.note_text for note in notes]))
+    result = gpt3_completion(prompt)
+    return [Note(i.strip()) for i in result.split('- ')]
 
 
 def main():
-    conversation = Conversation.load_convo()
+    conversation = Conversation.load()
     while True:
+
         # step 1 - get input
         # step 2 - gather all information about the conversation (load memories, notes, wikipedia maybe?)
-        # step 3 - use vector search to find information in our conversation/other information sources
-        # step 4 - compile an answer using such information
-        # step 5 - put out an answer
-        # step 6 - create a memory of the conversation
-        # step 7 - repeat
+        # step 3 - generate search queries to search info about the input
+        # step 4 - use vector search to find information in our conversation/other information sources
+        # step 5 - compile an answer using such information
+        # step 6 - put out an answer
+        # step 7 - create a memory of the conversation
+        # step 8 - repeat
 
         # step 1
-        user_input = input(f'{USERNAME}: ')
         message = get_user_input()
         conversation.add_message(message)
 
         # step 2
-        gather_info_prompt = open_file('prompts/prompt_conversation_prepare_info.txt').replace('<<INPUT>>', message.text)
-        queries = gpt3_completion(gather_info_prompt)
-        conversation
-
-        timestamp = time()
-
-        timestring = timestamp_to_datetime(timestamp)
-        message = f'{USERNAME}: {user_input}'
-
-        info = {'speaker': 'USER', 'time': timestamp, 'vector': vector, 'message': message, 'uuid': str(uuid4()),
-                'timestring': timestring}
-        filename = 'log_%s_USER.json' % timestamp
-        save_json('chat_logs/%s' % filename, info)
-        #### load conversation
-        conversation = load_convo()
-        #### compose corpus (fetch memories, etc)
-        if len(conversation) > 1:
-            memories = fetch_memories(vector, conversation, 10)  # pull episodic memories
-            # TODO - fetch declarative memories (facts, wikis, KB, company data, internet, etc)
-            notes = summarize_memories(memories)
-            # TODO - search existing notes first
-            recent = get_last_messages(conversation, 16)
+        last_6_messages = conversation.get_last_messages_in_string(12)  # get last 6 messages as a string
+        notes = conversation.get_notes_as_string()  # get notes from the conversation
+        # gather_info_prompt = (
+        #     open_file('prompts/prompt_conversation_prepare_info.txt')
+        #     .replace('<<CONVERSATION>>', last_6_messages)
+        #     .replace('<<NOTES>>', notes)
+        # )
+        # step 3
+        # search_queries = [i.strip() for i in gpt3_completion(gather_info_prompt).split('- ') if i.strip() != '']
+        # step 4
+        related_messages = search_conversation(conversation, message)
+        # facts = [f"Question: {i}; Answer: {input(i)}" for i in search_queries] # lmao
+        # step 5
+        if len(related_messages) > 10:
+            answer_prompt = (
+                open_file('prompts/prompt_response.txt')
+                .replace('<<CONVERSATION>>', last_6_messages)
+                .replace('<<NOTES>>', notes)
+                .replace('<<MESSAGES_RELATED>>', '\n'.join([i.get_string() for i in related_messages]))
+                # .replace('<<FACTS>>', '\n'.join(facts))
+            )
         else:
-            notes = ''
-            recent = ''
+            answer_prompt = (
+                open_file('prompts/prompt_response_in_new_conversation.txt').replace('<<CONVERSATION>>', last_6_messages)
+            )
+        # step 6
+        answer = gpt3_completion(answer_prompt)
+        print(f'{BOT_NAME}: {answer}')
+        conversation.add_message(Message(BOT_NAME, answer))
+        # step 7
+        notes_prompt = open_file('prompts/prompt_notes.txt').replace('<<INPUT>>', last_6_messages)
+        notes = [i.strip() for i in gpt3_completion(notes_prompt).split('- ')]
 
-        prompt = open_file('prompts/prompt_response.txt').replace('<<NOTES>>', notes).replace('<<CONVERSATION>>', recent)
-        #### generate response, vectorize, save, etc
-        output = gpt3_completion(prompt)
-        timestamp = time()
-        vector = gpt3_embedding(output)
-        timestring = timestamp_to_datetime(timestamp)
-        message = '%s: %s' % (BOT_NAME, output)
-        info = {'speaker': BOT_NAME, 'time': timestamp, 'vector': vector, 'message': message, 'uuid': str(uuid4()),
-                'timestring': timestring}
-        filename = f'log_{time()}_{BOT_NAME}.json'
-        save_json('chat_logs/%s' % filename, info)
-        #### print output
-        print(f'\n\n{BOT_NAME}: {output}')
+        [conversation.add_note(Note(note)) for note in notes]
+        if len(conversation.get_notes()) > 10:
+            # compress notes
+            notes = conversation.get_notes()
+            notes = summarize_notes(notes)
+            conversation.set_notes(notes)
+        # step 8
+        conversation.save()
 
 
 if __name__ == '__main__':
